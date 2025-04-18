@@ -16,12 +16,103 @@ def ensure_directories():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def clean_text(text):
-    """清理文本，移除多余的空白字符"""
-    # 移除连续的空白字符
-    text = re.sub(r'\s+', ' ', text)
-    # 移除特殊字符
-    text = re.sub(r'[^\w\s.,!?-]', '', text)
+    """清理文本，保留更多原始格式"""
+    if not text:
+        return ""
+    
+    # 移除多余的空白字符，但保留段落结构
+    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    
+    # 修复常见的OCR错误
+    text = text.replace('，', '，').replace('。', '。')
+    text = text.replace('：', '：').replace('；', '；')
+    
+    # 修复常见的断行问题
+    text = re.sub(r'([。！？；])[ \t]*\n', r'\1\n\n', text)
+    
+    # 修复标题格式
+    text = re.sub(r'^第([一二三四五六七八九十]+)章\s*', r'## 第\1章 ', text, flags=re.MULTILINE)
+    text = re.sub(r'^([一二三四五六七八九十]+)[.、]\s*', r'### \1. ', text, flags=re.MULTILINE)
+    
     return text.strip()
+
+def is_title(text):
+    """判断文本是否为标题"""
+    # 标题通常较短，且以特定字符结尾
+    if len(text) < 50 and re.search(r'[。：]$', text):
+        return True
+    
+    # 检查是否匹配标题模式
+    title_patterns = [
+        r'^第[一二三四五六七八九十]+章',
+        r'^[一二三四五六七八九十]+[.、]',
+        r'^[0-9]+[.、]',
+        r'^[A-Z][.、]'
+    ]
+    
+    for pattern in title_patterns:
+        if re.match(pattern, text.strip()):
+            return True
+    
+    return False
+
+def format_paragraph(text):
+    """格式化段落"""
+    # 分割成行
+    lines = text.split('\n')
+    formatted_lines = []
+    current_paragraph = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            if current_paragraph:
+                formatted_lines.append(' '.join(current_paragraph))
+                current_paragraph = []
+            formatted_lines.append('')
+        else:
+            # 如果是标题，单独处理
+            if is_title(line):
+                if current_paragraph:
+                    formatted_lines.append(' '.join(current_paragraph))
+                    current_paragraph = []
+                formatted_lines.append(line)
+            else:
+                current_paragraph.append(line)
+    
+    # 处理最后一个段落
+    if current_paragraph:
+        formatted_lines.append(' '.join(current_paragraph))
+    
+    return '\n'.join(formatted_lines)
+
+def extract_tables(page):
+    """提取表格并转换为Markdown格式"""
+    tables = page.extract_tables()
+    if not tables:
+        return ""
+    
+    markdown_tables = []
+    for table in tables:
+        if not table or not table[0]:
+            continue
+            
+        # 创建表头
+        header = '| ' + ' | '.join(str(cell) if cell else '' for cell in table[0]) + ' |'
+        separator = '| ' + ' | '.join(['---'] * len(table[0])) + ' |'
+        
+        # 创建表格内容
+        rows = []
+        for row in table[1:]:
+            if not row:
+                continue
+            rows.append('| ' + ' | '.join(str(cell) if cell else '' for cell in row) + ' |')
+        
+        # 组合表格
+        markdown_table = '\n'.join([header, separator] + rows)
+        markdown_tables.append(markdown_table)
+    
+    return '\n\n'.join(markdown_tables)
 
 def get_output_path(pdf_path):
     """生成输出文件路径"""
@@ -61,14 +152,30 @@ def convert_pdf_to_md(pdf_path, output_path=None):
                 # 处理每一页
                 for page_num in tqdm(range(total_pages), desc="转换进度"):
                     page = pdf.pages[page_num]
+                    
+                    # 提取文本
                     text = page.extract_text()
                     
-                    if text:
-                        # 清理文本
-                        cleaned_text = clean_text(text)
-                        # 写入Markdown文件
+                    # 提取表格
+                    tables = extract_tables(page)
+                    
+                    if text or tables:
+                        # 写入页码
                         md_file.write(f"## 第 {page_num + 1} 页\n\n")
-                        md_file.write(cleaned_text + "\n\n")
+                        
+                        # 处理文本
+                        if text:
+                            # 清理和格式化文本
+                            cleaned_text = clean_text(text)
+                            formatted_text = format_paragraph(cleaned_text)
+                            md_file.write(formatted_text + "\n\n")
+                        
+                        # 处理表格
+                        if tables:
+                            md_file.write(tables + "\n\n")
+                        
+                        # 添加页面分隔符
+                        md_file.write("---\n\n")
             
             print(f"\n转换完成！输出文件保存在: {output_path}")
             
